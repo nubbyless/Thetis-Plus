@@ -1,3 +1,32 @@
+This version of thetis has a built in vst plugin system it can only use vst3 plugins it can not use .vst or .vst2 plugins
+simply add the -vst flag to you shortcut to activate the plugin system
+it is only for 64bit systems there is no x86 32 bit version.
+example:
+
+
+Special Thanks to chasingcoffee his hard work is wht made this vst version possible i only changed a few things 
+Forked from his original at his github page 
+https://github.com/ChasingCoffee/Thetis/tree/vst-support
+
+
+Changelog
+VST2 Support Removed
+Removed VST2 plugin support entirely to avoid potential licensing and legal issues. The scanner now exclusively supports VST3 plugins.
+
+Scanner Improvements
+- Added detailed progress output during plugin scanning, including per-plugin timing and probe status (resolved via moduleinfo.json vs probing out-of-process)
+- Added WAVESHELL support — the scanner can now probe WAVESHell VST3 bundles without freezing, handling their slow plugin enumeration and problematic cleanup routines
+
+RX/TX VST Bypass
+Added front panel buttons to bypass RX VST and TX VST processing independently
+
+
+
+
+
+
+
+
 See LICENSE and LICENSE-DUAL-LICENSING for licensing details.
 
 # This project is now active again for some big changes that are on the way related to remote op - 2nd July 2026
