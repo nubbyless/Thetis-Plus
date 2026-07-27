@@ -4,7 +4,7 @@ it is only for 64bit systems there is no x86 32 bit version.
 example:
 
 
-Special Thanks to chasingcoffee his hard work is wht made this vst version possible i only changed a few things 
+Special Thanks to chasingcoffee his hard work is what made this vst version possible i only changed a few things 
 Forked from his original at his github page 
 https://github.com/ChasingCoffee/Thetis/tree/vst-support
 
