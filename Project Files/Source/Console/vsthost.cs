@@ -28,8 +28,7 @@ namespace Thetis
     enum VstPluginFormat
     {
         Unknown = 0,
-        Vst3 = 1,
-        Vst2 = 2
+        Vst3 = 1
     }
 
     enum VstHostState
@@ -56,6 +55,9 @@ namespace Thetis
 
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
         public string Name;
+
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)]
+        public string ClassId;
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -80,6 +82,9 @@ namespace Thetis
 
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
         public string Subcategories;
+
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)]
+        public string ClassId;
     }
 
     sealed class VstPluginState
@@ -88,6 +93,7 @@ namespace Thetis
         public bool Enabled { get; set; }
         public bool Bypass { get; set; }
         public string Name { get; set; }
+        public string ClassId { get; set; }
         public VstPluginLoadState LoadState { get; set; }
         public VstPluginFormat Format { get; set; }
         public byte[] StateData { get; set; }
@@ -150,6 +156,7 @@ namespace Thetis
         public string Vendor { get; set; }
         public string Version { get; set; }
         public string Subcategories { get; set; }
+        public string ClassId { get; set; }
         public bool HasAudioInput { get; set; }
         public bool HasAudioOutput { get; set; }
         public bool Available { get; set; }
@@ -193,6 +200,12 @@ namespace Thetis
         public string Vendor { get; set; }
         public string Version { get; set; }
         public string Subcategories { get; set; }
+        public string ClassId { get; set; }
+    }
+
+    sealed class VstPluginScannerMultiProbeResult
+    {
+        public List<VstPluginScannerProbeResult> Results { get; set; }
     }
 
     sealed class ModuleInfoFile
@@ -248,7 +261,7 @@ namespace Thetis
         private const int DeferredStateSaveDelayMs = 750;
         private const int StructuralStateSaveDelayMs = 1000;
         private const int RetryStateSaveDelayMs = 750;
-        private const int PluginProbeTimeoutMs = 15000;
+        private const int PluginProbeTimeoutMs = 1800000;
         private const string BundleArchitectureDir = "x86_64-win";
         private const string BundleContentsDir = "Contents";
         private const string BundleResourcesDir = "Resources";
@@ -308,7 +321,7 @@ namespace Thetis
         private static extern int NativeClearChain(VstChainKind kind);
 
         [DllImport(NativeLibrary, EntryPoint = "VST_AddPlugin", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
-        private static extern int NativeAddPlugin(VstChainKind kind, string pluginPath);
+        private static extern int NativeAddPlugin(VstChainKind kind, string pluginPath, string pluginCid);
 
         [DllImport(NativeLibrary, EntryPoint = "VST_RemovePlugin", CallingConvention = CallingConvention.Cdecl)]
         private static extern int NativeRemovePlugin(VstChainKind kind, int index);
@@ -621,7 +634,7 @@ namespace Thetis
             return true;
         }
 
-        public static VstOperationResult AddPlugin(VstChainKind kind, string pluginPath)
+        public static VstOperationResult AddPlugin(VstChainKind kind, string pluginPath, string classId = null)
         {
             string normalizedPath;
             VstPluginFormat format;
@@ -652,7 +665,7 @@ namespace Thetis
                 return new VstOperationResult
                 {
                     Success = false,
-                    Message = "Only .vst3 plugin files or bundle paths and .dll VST2 plugin files are supported."
+                    Message = "Only .vst3 plugin files or bundle paths are supported."
                 };
             }
 
@@ -661,26 +674,11 @@ namespace Thetis
                 return new VstOperationResult
                 {
                     Success = false,
-                    Message = format == VstPluginFormat.Vst2
-                        ? "The selected VST2 plugin file does not exist."
-                        : "The selected VST3 plugin path does not exist."
+                    Message = "The selected VST3 plugin path does not exist."
                 };
             }
 
-            if (format == VstPluginFormat.Vst2)
-            {
-                string probeError = ProbeVst2Plugin(normalizedPath);
-                if (probeError != null)
-                {
-                    return new VstOperationResult
-                    {
-                        Success = false,
-                        Message = probeError
-                    };
-                }
-            }
-
-            index = NativeAddPlugin(kind, normalizedPath);
+            index = NativeAddPlugin(kind, normalizedPath, classId);
             if (index < 0)
             {
                 return new VstOperationResult
@@ -910,6 +908,7 @@ namespace Thetis
             int discoveredCount = 0;
             int reusedCount = 0;
             int unavailableCount = 0;
+            int probedCount = 0;
             int workerCount;
 
             if (!EnsureNativeAvailable() || !SdkAvailable)
@@ -939,6 +938,7 @@ namespace Thetis
 
             orderedCandidatePaths = new List<string>(candidatePaths);
             orderedCandidatePaths.Sort(StringComparer.OrdinalIgnoreCase);
+            System.Diagnostics.Stopwatch scanTimer = System.Diagnostics.Stopwatch.StartNew();
             workerCount = 1;
             if (forceRescanAll)
                 ReportScanProgress(progress, "Full rescan requested. Existing plugin cache entries will be rebuilt.", null);
@@ -956,44 +956,50 @@ namespace Thetis
                 {
                     try
                     {
-                        VstCatalogPlugin plugin;
                         string lastModifiedUtc = GetCatalogPluginLastModifiedUtc(candidatePath);
                         VstCatalogPlugin cachedPlugin;
+                        int probeIndex = Interlocked.Increment(ref probedCount);
 
                         cancellationToken.ThrowIfCancellationRequested();
-                        ReportScanProgress(progress, "Scanning plugin: " + candidatePath, null);
+                        ReportScanProgress(progress, string.Format("[{0}/{1}] Probing: {2}", probeIndex, orderedCandidatePaths.Count, candidatePath), null);
                         if (!forceRescanAll && TryGetReusableCatalogPlugin(cachedPluginsByPath, candidatePath, lastModifiedUtc, out cachedPlugin))
                         {
-                            plugin = CloneCatalogPlugin(cachedPlugin);
-                            scannedPlugins.Add(plugin);
-                            if (plugin.Available)
+                            VstCatalogPlugin reused = CloneCatalogPlugin(cachedPlugin);
+                            scannedPlugins.Add(reused);
+                            if (reused.Available)
                                 Interlocked.Increment(ref discoveredCount);
                             else
                                 Interlocked.Increment(ref unavailableCount);
                             Interlocked.Increment(ref reusedCount);
-                            ReportScanProgress(progress, "Using cached entry: " + GetCatalogPluginDisplayName(plugin), CloneCatalogPlugin(plugin));
+                            ReportScanProgress(progress, string.Format("[{0}/{1}] Cached: {2}", probeIndex, orderedCandidatePaths.Count, GetCatalogPluginDisplayName(reused)), CloneCatalogPlugin(reused));
                             return;
                         }
 
-                        plugin = ProbeCatalogPlugin(candidatePath);
+                        System.Diagnostics.Stopwatch probeTimer = System.Diagnostics.Stopwatch.StartNew();
+                        List<VstCatalogPlugin> plugins = ProbeCatalogPlugin(candidatePath, progress);
+                        probeTimer.Stop();
                         cancellationToken.ThrowIfCancellationRequested();
-                        if (plugin != null)
+                        if (plugins != null)
                         {
-                            plugin.LastModifiedUtc = lastModifiedUtc;
-                            scannedPlugins.Add(plugin);
-                        if (plugin.Available)
-                        {
-                            int foundCount = Interlocked.Increment(ref discoveredCount);
-                            ReportScanProgress(progress, string.Format("Found {0}: {1}", foundCount, GetCatalogPluginDisplayName(plugin)), CloneCatalogPlugin(plugin));
-                            ReportScanProgress(progress, "Adding to catalog: " + GetCatalogPluginDisplayName(plugin), null);
-                        }
-                            else
+                            foreach (VstCatalogPlugin plugin in plugins)
                             {
-                                Interlocked.Increment(ref unavailableCount);
-                                string unavailableMessage = string.Format("Marked unavailable: {0} ({1})", GetCatalogPluginDisplayName(plugin), plugin.Status ?? "Unavailable");
-                                if (!string.IsNullOrWhiteSpace(plugin.ErrorDetail))
-                                    unavailableMessage += " - " + plugin.ErrorDetail;
-                                ReportScanProgress(progress, unavailableMessage, CloneCatalogPlugin(plugin));
+                                if (plugin == null)
+                                    continue;
+                                plugin.LastModifiedUtc = lastModifiedUtc;
+                                scannedPlugins.Add(plugin);
+                                if (plugin.Available)
+                                {
+                                    int foundCount = Interlocked.Increment(ref discoveredCount);
+                                    ReportScanProgress(progress, string.Format("[{0}/{1}] Found ({2}ms) {3}: {4}", probeIndex, orderedCandidatePaths.Count, probeTimer.ElapsedMilliseconds, foundCount, GetCatalogPluginDisplayName(plugin)), CloneCatalogPlugin(plugin));
+                                }
+                                else
+                                {
+                                    Interlocked.Increment(ref unavailableCount);
+                                    string unavailableMessage = string.Format("[{0}/{1}] Unavailable ({2}ms) {3} ({4})", probeIndex, orderedCandidatePaths.Count, probeTimer.ElapsedMilliseconds, GetCatalogPluginDisplayName(plugin), plugin.Status ?? "Unavailable");
+                                    if (!string.IsNullOrWhiteSpace(plugin.ErrorDetail))
+                                        unavailableMessage += " - " + plugin.ErrorDetail;
+                                    ReportScanProgress(progress, unavailableMessage, CloneCatalogPlugin(plugin));
+                                }
                             }
                         }
                     }
@@ -1043,10 +1049,11 @@ namespace Thetis
             SavePluginCatalog(catalog);
             WriteScanLog(catalog);
             ReportScanProgress(progress, string.Format(
-                "Scan complete. {0} available, {1} unavailable, {2} reused from cache.",
+                "Scan complete in {3}s. {0} available, {1} unavailable, {2} reused from cache.",
                 discoveredCount,
                 unavailableCount,
-                reusedCount), null);
+                reusedCount,
+                scanTimer.Elapsed.TotalSeconds.ToString("F1")), null);
             return catalog;
         }
 
@@ -1161,8 +1168,6 @@ namespace Thetis
             {
                 case VstPluginFormat.Vst3:
                     return "VST3";
-                case VstPluginFormat.Vst2:
-                    return "VST2";
                 default:
                     return "Unknown";
             }
@@ -1437,6 +1442,7 @@ namespace Thetis
             {
                 Path = nativeInfo.Path,
                 Name = nativeInfo.Name,
+                ClassId = nativeInfo.ClassId,
                 Enabled = nativeInfo.Enabled != 0,
                 Bypass = nativeInfo.Bypass != 0,
                 LoadState = (VstPluginLoadState)nativeInfo.LoadState,
@@ -1483,7 +1489,7 @@ namespace Thetis
                 VstPluginState pluginState = chainState.Plugins[i];
 
                 if (pluginState == null || string.IsNullOrEmpty(pluginState.Path)) continue;
-                addedIndexes[i] = NativeAddPlugin(kind, pluginState.Path);
+                addedIndexes[i] = NativeAddPlugin(kind, pluginState.Path, pluginState.ClassId);
             }
 
             for (int i = 0; i < chainState.Plugins.Count; i++)
@@ -1624,65 +1630,12 @@ namespace Thetis
             return File.Exists(pluginPath) || Directory.Exists(pluginPath);
         }
 
-        private const int Vst2ProbeDllLoadFailed = -4;
-        private const int Vst2ProbeNoEntryPoint = -5;
-        private const int Vst2ProbeCreateFailed = -6;
-        private const int Vst2ProbeCrashed = -7;
-
-        private static string ProbeVst2Plugin(string pluginPath)
-        {
-            VstPluginProbeInfoNative probeInfo;
-            int probeResult;
-
-            try
-            {
-                probeResult = NativeProbePlugin(pluginPath, out probeInfo);
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine("VST2 probe failed: " + ex);
-                return "The selected file could not be loaded as a VST2 plugin.";
-            }
-
-            if (probeResult == Vst2ProbeNoEntryPoint)
-                return "The selected DLL is not a VST2 plugin (no VST2 entry point found).";
-            if (probeResult == Vst2ProbeDllLoadFailed)
-                return "The selected DLL could not be loaded. It may be a 32-bit plugin (only 64-bit VST2 effects are supported).";
-            if (probeResult == Vst2ProbeCreateFailed)
-                return "The selected DLL could not create a VST2 plugin instance.";
-            if (probeResult == Vst2ProbeCrashed)
-                return "The selected file crashed during probing and is not compatible.";
-            if (probeResult != 0)
-                return string.Format("The selected DLL could not be probed as a VST2 plugin (code {0}).", probeResult);
-
-            if (probeInfo.IsValid == 0)
-                return "The selected DLL is not a valid VST2 plugin.";
-
-            if (probeInfo.IsAudioEffect == 0)
-            {
-                string pluginName = !string.IsNullOrWhiteSpace(probeInfo.Name) ? probeInfo.Name : Path.GetFileNameWithoutExtension(pluginPath);
-                bool hasInput = probeInfo.HasAudioInput != 0;
-                bool hasOutput = probeInfo.HasAudioOutput != 0;
-
-                if (!hasInput && !hasOutput)
-                    return string.Format("\"{0}\" is not an audio effect (no audio input or output). Only VST2 audio effects are supported.", pluginName);
-                if (!hasInput)
-                    return string.Format("\"{0}\" appears to be an instrument or generator, not an audio effect. Only VST2 audio effects are supported.", pluginName);
-
-                return string.Format("\"{0}\" is not a supported audio effect. Only VST2 audio effects are supported (instruments, MIDI plugins, and offline processors are not supported).", pluginName);
-            }
-
-            return null;
-        }
-
         internal static VstPluginFormat DetectPluginFormat(string pluginPath)
         {
             string extension = Path.GetExtension(NormalizePluginPath(pluginPath));
 
             if (string.Equals(extension, ".vst3", StringComparison.OrdinalIgnoreCase))
                 return VstPluginFormat.Vst3;
-            if (string.Equals(extension, ".dll", StringComparison.OrdinalIgnoreCase))
-                return VstPluginFormat.Vst2;
             return VstPluginFormat.Unknown;
         }
 
@@ -1815,25 +1768,27 @@ namespace Thetis
             return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ScannerHelperExeName);
         }
 
-        private static VstPluginScannerProbeResult ProbePluginOutOfProcess(string pluginPath)
+        private static List<VstPluginScannerProbeResult> ProbePluginOutOfProcess(string pluginPath, IProgress<VstCatalogScanUpdate> progress = null)
         {
             string helperPath = GetScannerHelperPath();
             ProcessStartInfo startInfo;
             string standardOutput;
             string standardError;
-            VstPluginScannerProbeResult result;
             StringBuilder standardOutputBuilder = new StringBuilder();
             StringBuilder standardErrorBuilder = new StringBuilder();
 
             if (!File.Exists(helperPath))
             {
-                return new VstPluginScannerProbeResult
+                return new List<VstPluginScannerProbeResult>
                 {
-                    Success = false,
-                    Error = "Scanner helper is missing.",
-                    ProbeResultCode = -100,
-                    IsAudioEffect = 1,
-                    Path = pluginPath
+                    new VstPluginScannerProbeResult
+                    {
+                        Success = false,
+                        Error = "Scanner helper is missing.",
+                        ProbeResultCode = -100,
+                        IsAudioEffect = 1,
+                        Path = pluginPath
+                    }
                 };
             }
 
@@ -1874,12 +1829,24 @@ namespace Thetis
 
                     lock (standardErrorBuilder)
                         standardErrorBuilder.AppendLine(args.Data);
+
+                    if (progress != null && !string.IsNullOrWhiteSpace(args.Data))
+                    {
+                        try
+                        {
+                            progress.Report(new VstCatalogScanUpdate { Message = "  " + args.Data.Trim() });
+                        }
+                        catch
+                        {
+                        }
+                    }
                 };
 
                 process.Start();
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
 
+                System.Diagnostics.Stopwatch probeTimer = System.Diagnostics.Stopwatch.StartNew();
                 if (!process.WaitForExit(PluginProbeTimeoutMs))
                 {
                     try
@@ -1898,16 +1865,20 @@ namespace Thetis
                     {
                     }
 
-                    return new VstPluginScannerProbeResult
+                    return new List<VstPluginScannerProbeResult>
                     {
-                        Success = false,
-                        Error = "Scanner timeout.",
-                        ProbeResultCode = -101,
-                        IsAudioEffect = 1,
-                        Path = pluginPath
+                        new VstPluginScannerProbeResult
+                        {
+                            Success = false,
+                            Error = string.Format("Scanner timeout after {0}s.", probeTimer.Elapsed.TotalSeconds.ToString("F0")),
+                            ProbeResultCode = -101,
+                            IsAudioEffect = 1,
+                            Path = pluginPath
+                        }
                     };
                 }
 
+                probeTimer.Stop();
                 try
                 {
                     process.WaitForExit();
@@ -1925,20 +1896,51 @@ namespace Thetis
                 {
                     try
                     {
-                        result = JsonConvert.DeserializeObject<VstPluginScannerProbeResult>(standardOutput.Trim());
-                        if (result != null)
+                        string trimmed = standardOutput.Trim();
+                        int jsonStart = trimmed.IndexOfAny(new char[] { '{', '[' });
+                        if (jsonStart > 0)
+                            trimmed = trimmed.Substring(jsonStart);
+                        VstPluginScannerMultiProbeResult multiResult = JsonConvert.DeserializeObject<VstPluginScannerMultiProbeResult>(trimmed);
+                        if (multiResult != null && multiResult.Results != null && multiResult.Results.Count > 0)
                         {
-                            // Preserve helper stderr only as supplemental scan failure detail.
-                            if (!result.Success && !string.IsNullOrWhiteSpace(standardError))
+                            foreach (VstPluginScannerProbeResult pr in multiResult.Results)
+                            {
+                                if (pr != null && !pr.Success && !string.IsNullOrWhiteSpace(standardError))
+                                {
+                                    string detail = standardError.Trim();
+                                    if (detail.Length > 300)
+                                        detail = detail.Substring(0, 300);
+                                    pr.Error = string.IsNullOrWhiteSpace(pr.Error)
+                                        ? detail
+                                        : pr.Error + " | " + detail;
+                                }
+                            }
+                            return multiResult.Results;
+                        }
+                    }
+                    catch
+                    {
+                    }
+
+                    try
+                    {
+                        string singleTrimmed = standardOutput.Trim();
+                        int jsonStart2 = singleTrimmed.IndexOfAny(new char[] { '{', '[' });
+                        if (jsonStart2 > 0)
+                            singleTrimmed = singleTrimmed.Substring(jsonStart2);
+                        VstPluginScannerProbeResult singleResult = JsonConvert.DeserializeObject<VstPluginScannerProbeResult>(singleTrimmed);
+                        if (singleResult != null)
+                        {
+                            if (!singleResult.Success && !string.IsNullOrWhiteSpace(standardError))
                             {
                                 string detail = standardError.Trim();
                                 if (detail.Length > 300)
                                     detail = detail.Substring(0, 300);
-                                result.Error = string.IsNullOrWhiteSpace(result.Error)
+                                singleResult.Error = string.IsNullOrWhiteSpace(singleResult.Error)
                                     ? detail
-                                    : result.Error + " | " + detail;
+                                    : singleResult.Error + " | " + detail;
                             }
-                            return result;
+                            return new List<VstPluginScannerProbeResult> { singleResult };
                         }
                     }
                     catch (Exception ex)
@@ -1947,13 +1949,16 @@ namespace Thetis
                     }
                 }
 
-                return new VstPluginScannerProbeResult
+                return new List<VstPluginScannerProbeResult>
                 {
-                    Success = false,
-                    Error = string.IsNullOrWhiteSpace(standardError) ? "Scanner crashed." : standardError.Trim(),
-                    ProbeResultCode = process.ExitCode,
-                    IsAudioEffect = 1,
-                    Path = pluginPath
+                    new VstPluginScannerProbeResult
+                    {
+                        Success = false,
+                        Error = string.IsNullOrWhiteSpace(standardError) ? "Scanner crashed." : standardError.Trim(),
+                        ProbeResultCode = process.ExitCode,
+                        IsAudioEffect = 1,
+                        Path = pluginPath
+                    }
                 };
             }
         }
@@ -2159,6 +2164,7 @@ namespace Thetis
                     Vendor = vendor,
                     Version = classEntry.Version,
                     Subcategories = subcategories,
+                    ClassId = classEntry.CID,
                     HasAudioInput = true,
                     HasAudioOutput = true,
                     Available = true,
@@ -2180,6 +2186,7 @@ namespace Thetis
                 Vendor = probeResult != null ? probeResult.Vendor : null,
                 Version = probeResult != null ? probeResult.Version : null,
                 Subcategories = probeResult != null ? probeResult.Subcategories : null,
+                ClassId = probeResult != null ? probeResult.ClassId : null,
                 HasAudioInput = probeResult != null && probeResult.HasAudioInput != 0,
                 HasAudioOutput = probeResult != null && probeResult.HasAudioOutput != 0,
                 Available = false,
@@ -2197,6 +2204,7 @@ namespace Thetis
                 Vendor = probeResult != null ? probeResult.Vendor : null,
                 Version = probeResult != null ? probeResult.Version : null,
                 Subcategories = probeResult != null ? probeResult.Subcategories : null,
+                ClassId = probeResult != null ? probeResult.ClassId : null,
                 HasAudioInput = probeResult != null && probeResult.HasAudioInput != 0,
                 HasAudioOutput = probeResult != null && probeResult.HasAudioOutput != 0,
                 Available = true,
@@ -2334,55 +2342,78 @@ namespace Thetis
             }
         }
 
-        private static VstCatalogPlugin ProbeCatalogPlugin(string pluginPath)
+        private static List<VstCatalogPlugin> ProbeCatalogPlugin(string pluginPath, IProgress<VstCatalogScanUpdate> progress = null)
         {
             string fallbackName = Path.GetFileNameWithoutExtension(NormalizePluginPath(pluginPath));
-            VstPluginScannerProbeResult probeResult;
             VstCatalogPlugin moduleInfoPlugin;
 
             if (TryProbeFromModuleInfo(pluginPath, out moduleInfoPlugin))
-                return moduleInfoPlugin;
+            {
+                ReportScanProgress(progress, string.Format("  Resolved via moduleinfo.json: {0}", fallbackName), null);
+                return new List<VstCatalogPlugin> { moduleInfoPlugin };
+            }
 
+            ReportScanProgress(progress, string.Format("  Probing out-of-process: {0}", fallbackName), null);
+            List<VstPluginScannerProbeResult> probeResults;
             try
             {
-                probeResult = ProbePluginOutOfProcess(pluginPath);
+                probeResults = ProbePluginOutOfProcess(pluginPath, progress);
             }
             catch (Exception ex)
             {
                 Trace.WriteLine("VST plugin probe failed. " + ex);
-                return new VstCatalogPlugin
+                return new List<VstCatalogPlugin>
                 {
-                    Path = pluginPath,
-                    Name = fallbackName,
-                    Available = false,
-                    Status = "Scanner error",
-                    ErrorDetail = SummarizeProbeError(ex.Message)
+                    new VstCatalogPlugin
+                    {
+                        Path = pluginPath,
+                        Name = fallbackName,
+                        Available = false,
+                        Status = "Scanner error",
+                        ErrorDetail = SummarizeProbeError(ex.Message)
+                    }
                 };
             }
 
-            if (probeResult == null)
+            if (probeResults == null || probeResults.Count == 0)
             {
-                return new VstCatalogPlugin
+                return new List<VstCatalogPlugin>
                 {
-                    Path = pluginPath,
-                    Name = fallbackName,
-                    Available = false,
-                    Status = "Scanner error"
+                    new VstCatalogPlugin
+                    {
+                        Path = pluginPath,
+                        Name = fallbackName,
+                        Available = false,
+                        Status = "Scanner error"
+                    }
                 };
             }
 
-            if (probeResult.IsAudioEffect == 0)
+            List<VstCatalogPlugin> catalogPlugins = new List<VstCatalogPlugin>();
+            foreach (VstPluginScannerProbeResult probeResult in probeResults)
             {
-                if (probeResult.ProbeResultCode == -5 || probeResult.ProbeResultCode == -6)
-                    return null;
+                if (probeResult == null)
+                    continue;
 
-                return BuildUnavailableCatalogPlugin(pluginPath, fallbackName, probeResult);
+                if (probeResult.IsAudioEffect == 0)
+                {
+                    if (probeResult.ProbeResultCode == -5 || probeResult.ProbeResultCode == -6)
+                        continue;
+
+                    catalogPlugins.Add(BuildUnavailableCatalogPlugin(pluginPath, fallbackName, probeResult));
+                    continue;
+                }
+
+                if (!probeResult.Success || probeResult.IsValid == 0)
+                {
+                    catalogPlugins.Add(BuildUnavailableCatalogPlugin(pluginPath, fallbackName, probeResult));
+                    continue;
+                }
+
+                catalogPlugins.Add(BuildAvailableCatalogPlugin(pluginPath, fallbackName, probeResult));
             }
 
-            if (!probeResult.Success || probeResult.IsValid == 0)
-                return BuildUnavailableCatalogPlugin(pluginPath, fallbackName, probeResult);
-
-            return BuildAvailableCatalogPlugin(pluginPath, fallbackName, probeResult);
+            return catalogPlugins.Count > 0 ? catalogPlugins : new List<VstCatalogPlugin>();
         }
 
         private static void ReportScanProgress(IProgress<VstCatalogScanUpdate> progress, string message, VstCatalogPlugin plugin)

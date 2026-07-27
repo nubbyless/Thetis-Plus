@@ -324,6 +324,30 @@
               />
       </Component>
 
+      <Component Guid="*">
+        <File Id="VstHostBridgeDLL"
+              Source="$(var.FilesPath)VstHostBridge.dll"
+              KeyPath="yes"
+              Checksum="yes"
+              />
+      </Component>
+
+      <Component Guid="*">
+        <File Id="VstAudioHostEXE"
+              Source="$(var.FilesPath)VstAudioHost.exe"
+              KeyPath="yes"
+              Checksum="yes"
+              />
+      </Component>
+
+      <Component Guid="*">
+        <File Id="VstPluginScannerEXE"
+              Source="$(var.FilesPath)VstPluginScanner.exe"
+              KeyPath="yes"
+              Checksum="yes"
+              />
+      </Component>
+
 	<Component Guid="*">
 		<File Id="libSkiaSharpDLL"
 				Source="$(var.FilesPath)libSkiaSharp.dll"
@@ -668,6 +692,42 @@
 		<Component Guid="*">
 			<File Id="System.MemoryDLL"
 				  Source="$(var.FilesPath)System.Memory.dll"
+				  KeyPath="yes"
+              />
+		</Component>
+		<Component Guid="*">
+			<File Id="MicrosoftBclHashCodeDLL"
+				  Source="$(var.FilesPath)Microsoft.Bcl.HashCode.dll"
+				  KeyPath="yes"
+              />
+		</Component>
+		<Component Guid="*">
+			<File Id="MicrosoftBclMemoryDLL"
+				  Source="$(var.FilesPath)Microsoft.Bcl.Memory.dll"
+				  KeyPath="yes"
+              />
+		</Component>
+		<Component Guid="*">
+			<File Id="MicrosoftNETStringToolsDLL"
+				  Source="$(var.FilesPath)Microsoft.NET.StringTools.dll"
+				  KeyPath="yes"
+              />
+		</Component>
+		<Component Guid="*">
+			<File Id="SystemFormatsNrbfDLL"
+				  Source="$(var.FilesPath)System.Formats.Nrbf.dll"
+				  KeyPath="yes"
+              />
+		</Component>
+		<Component Guid="*">
+			<File Id="SystemLinqAsyncEnumerableDLL"
+				  Source="$(var.FilesPath)System.Linq.AsyncEnumerable.dll"
+				  KeyPath="yes"
+              />
+		</Component>
+		<Component Guid="*">
+			<File Id="SystemResourcesExtensionsDLL"
+				  Source="$(var.FilesPath)System.Resources.Extensions.dll"
 				  KeyPath="yes"
               />
 		</Component>

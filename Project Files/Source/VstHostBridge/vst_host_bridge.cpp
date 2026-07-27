@@ -2,7 +2,6 @@
 
 #include "vst3_sdk.h"
 #include "vst_runtime.h"
-#include "vst2_runtime.h"
 #include "../VstCommon/vst_ipc.h"
 
 #include <cstdarg>
@@ -85,6 +84,7 @@ namespace
 		{
 			wchar_t path[VST_MAX_PLUGIN_PATH_CHARS] = {};
 			wchar_t name[VST_MAX_PLUGIN_NAME_CHARS] = {};
+			wchar_t cid[VST_MAX_PLUGIN_CID_CHARS] = {};
 			int enabled = 1;
 			int bypass = 0;
 			int load_state = VST_PLUGIN_LOAD_DESCRIPTOR_ONLY;
@@ -155,8 +155,6 @@ namespace
 			return VST_PLUGIN_FORMAT_UNKNOWN;
 		if (_wcsicmp(extension, L".vst3") == 0)
 			return VST_PLUGIN_FORMAT_VST3;
-		if (_wcsicmp(extension, L".dll") == 0)
-			return VST_PLUGIN_FORMAT_VST2;
 		return VST_PLUGIN_FORMAT_UNKNOWN;
 	}
 
@@ -278,10 +276,11 @@ namespace
 		ReleaseSRWLockExclusive(&state.cache_lock);
 	}
 
-	void initialize_cached_plugin_state(HostProcessState::CachedPluginState& plugin, const wchar_t* plugin_path)
+	void initialize_cached_plugin_state(HostProcessState::CachedPluginState& plugin, const wchar_t* plugin_path, const wchar_t* plugin_cid = nullptr)
 	{
 		plugin.path[0] = L'\0';
 		plugin.name[0] = L'\0';
+		plugin.cid[0] = L'\0';
 		plugin.enabled = 1;
 		plugin.bypass = 0;
 		plugin.load_state = VST_PLUGIN_LOAD_DESCRIPTOR_ONLY;
@@ -300,6 +299,8 @@ namespace
 				*extension = L'\0';
 			wcsncpy_s(plugin.name, VST_MAX_PLUGIN_NAME_CHARS, name_buffer, _TRUNCATE);
 		}
+		if (plugin_cid && plugin_cid[0])
+			wcsncpy_s(plugin.cid, VST_MAX_PLUGIN_CID_CHARS, plugin_cid, _TRUNCATE);
 	}
 
 	int cached_get_plugin_info(const HostProcessState& state, int index, VstPluginInfo* info)
@@ -325,6 +326,8 @@ namespace
 		info->format = plugin->format;
 		wcsncpy_s(info->path, VST_MAX_PLUGIN_PATH_CHARS, plugin->path, _TRUNCATE);
 		wcsncpy_s(info->name, VST_MAX_PLUGIN_NAME_CHARS, plugin->name, _TRUNCATE);
+		if (plugin->cid[0])
+			wcsncpy_s(info->cid, VST_MAX_PLUGIN_CID_CHARS, plugin->cid, _TRUNCATE);
 		ReleaseSRWLockShared(const_cast<PSRWLOCK>(&state.cache_lock));
 		return result;
 	}
@@ -1106,6 +1109,8 @@ namespace
 
 			request.header.type = VST_HOST_IPC_ADD_PLUGIN;
 			wcsncpy_s(request.plugin_path, VST_MAX_PLUGIN_PATH_CHARS, cached_plugin.path, _TRUNCATE);
+			if (cached_plugin.cid[0])
+				wcsncpy_s(request.plugin_cid, VST_MAX_PLUGIN_CID_CHARS, cached_plugin.cid, _TRUNCATE);
 			if (!send_host_request(kind, request, response) || response.result < 0)
 				return false;
 			host_index = response.result;
@@ -1745,26 +1750,6 @@ int VST_ProbePluginMetadataOnly(const wchar_t* plugin_path, VstPluginProbeInfo* 
 {
 	ensure_initialized();
 
-	if (detect_plugin_format_from_path(plugin_path) == VST_PLUGIN_FORMAT_VST2)
-	{
-		__try
-		{
-			return Vst2Runtime_ProbePluginMetadataOnly(plugin_path, info);
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER)
-		{
-			if (info)
-			{
-				if (info->is_valid)
-					return 0;
-				memset(info, 0, sizeof(*info));
-				if (plugin_path)
-					wcsncpy_s(info->path, VST_MAX_PLUGIN_PATH_CHARS, plugin_path, _TRUNCATE);
-			}
-			return -7;
-		}
-	}
-
 	__try
 	{
 		return VstRuntime_ProbePluginMetadataOnly(plugin_path, info);
@@ -1790,6 +1775,22 @@ int VST_ProbePluginMetadataOnly(const wchar_t* plugin_path, VstPluginProbeInfo* 
 			if (plugin_path)
 				wcsncpy_s(info->path, VST_MAX_PLUGIN_PATH_CHARS, plugin_path, _TRUNCATE);
 		}
+		return -7;
+	}
+}
+
+int VST_ProbePluginAllClasses(const wchar_t* plugin_path, VstPluginProbeInfo* infos, int max_count, int* actual_count)
+{
+	ensure_initialized();
+
+	__try
+	{
+		return VstRuntime_ProbePluginAllClasses(plugin_path, infos, max_count, actual_count);
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		if (actual_count)
+			*actual_count = 0;
 		return -7;
 	}
 }
@@ -1974,7 +1975,7 @@ int VST_ClearChain(VstChainKind kind)
 	return 0;
 }
 
-int VST_AddPlugin(VstChainKind kind, const wchar_t* plugin_path)
+int VST_AddPlugin(VstChainKind kind, const wchar_t* plugin_path, const wchar_t* plugin_cid)
 {
 	ensure_initialized();
 
@@ -1995,6 +1996,8 @@ int VST_AddPlugin(VstChainKind kind, const wchar_t* plugin_path)
 
 		request.header.type = VST_HOST_IPC_ADD_PLUGIN;
 		wcsncpy_s(request.plugin_path, VST_MAX_PLUGIN_PATH_CHARS, plugin_path, _TRUNCATE);
+		if (plugin_cid && plugin_cid[0])
+			wcsncpy_s(request.plugin_cid, VST_MAX_PLUGIN_CID_CHARS, plugin_cid, _TRUNCATE);
 		if (!send_host_request(kind, request, response) || response.result < 0)
 		{
 			trace_oop(
@@ -2006,7 +2009,7 @@ int VST_AddPlugin(VstChainKind kind, const wchar_t* plugin_path)
 		}
 		plugin_index = response.result;
 
-		initialize_cached_plugin_state(cached_plugin, plugin_path);
+		initialize_cached_plugin_state(cached_plugin, plugin_path, plugin_cid);
 		cached_plugin.load_state = host_get_plugin_info(kind, plugin_index, host_info) == 0 ? host_info.load_state : VST_PLUGIN_LOAD_DESCRIPTOR_ONLY;
 		if (host_info.name[0] != L'\0')
 			wcsncpy_s(cached_plugin.name, VST_MAX_PLUGIN_NAME_CHARS, host_info.name, _TRUNCATE);
@@ -2025,9 +2028,10 @@ int VST_AddPlugin(VstChainKind kind, const wchar_t* plugin_path)
 		advance_cache_generation(host_state);
 		ReleaseSRWLockExclusive(&host_state.cache_lock);
 		trace_oop(
-			L"[VST bridge %s] add plugin path=\"%s\" index=%d cached_count=%d host_load=%d format=%d\r\n",
+			L"[VST bridge %s] add plugin path=\"%s\" cid=\"%s\" index=%d cached_count=%d host_load=%d format=%d\r\n",
 			host_kind_name(kind),
 			plugin_path ? plugin_path : L"",
+			plugin_cid ? plugin_cid : L"",
 			plugin_index,
 			VST_GetPluginCount(kind),
 			cached_plugin.load_state,
@@ -2039,7 +2043,7 @@ int VST_AddPlugin(VstChainKind kind, const wchar_t* plugin_path)
 		HostProcessState::CachedPluginState cached_plugin;
 		int plugin_index;
 
-		initialize_cached_plugin_state(cached_plugin, plugin_path);
+		initialize_cached_plugin_state(cached_plugin, plugin_path, plugin_cid);
 		ensure_host_recovery(kind);
 		AcquireSRWLockExclusive(&host_state.cache_lock);
 		plugin_index = static_cast<int>(host_state.cached_plugins.size());
@@ -2047,9 +2051,10 @@ int VST_AddPlugin(VstChainKind kind, const wchar_t* plugin_path)
 		advance_cache_generation(host_state);
 		ReleaseSRWLockExclusive(&host_state.cache_lock);
 		trace_oop(
-			L"[VST bridge %s] add plugin path=\"%s\" index=%d cached_count=%d host_load=%d format=%d\r\n",
+			L"[VST bridge %s] add plugin path=\"%s\" cid=\"%s\" index=%d cached_count=%d host_load=%d format=%d\r\n",
 			host_kind_name(kind),
 			plugin_path ? plugin_path : L"",
+			plugin_cid ? plugin_cid : L"",
 			plugin_index,
 			VST_GetPluginCount(kind),
 			cached_plugin.load_state,

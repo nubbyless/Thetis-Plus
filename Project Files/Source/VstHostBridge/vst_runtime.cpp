@@ -108,6 +108,7 @@ struct VstPluginRuntime
 	HostCommandType command_type = HostCommandNone;
 	int command_result = 0;
 	const wchar_t* command_plugin_path = 0;
+	const wchar_t* command_plugin_cid = 0;
 	wchar_t* command_plugin_name = 0;
 	size_t command_plugin_name_count = 0;
 	int command_sample_rate = 0;
@@ -1321,7 +1322,8 @@ namespace
 		const wchar_t* plugin_path,
 		wchar_t* plugin_name,
 		size_t plugin_name_count,
-		ParameterChangeTransfer* transfer_target)
+		ParameterChangeTransfer* transfer_target,
+		const wchar_t* plugin_cid = nullptr)
 	{
 		std::string module_path;
 		std::string error_description;
@@ -1364,12 +1366,21 @@ namespace
 		class_infos = factory.classInfos();
 		for (i = 0; i < class_infos.size(); ++i)
 		{
-			if (class_infos[i].category() == kVstAudioEffectClass)
+			if (class_infos[i].category() != kVstAudioEffectClass)
+				continue;
+
+			if (plugin_cid && plugin_cid[0])
 			{
-				runtime.class_info = class_infos[i];
-				trace_editor("load selected class name=%s", runtime.class_info.name().c_str());
-				break;
+				std::string cid_str = class_infos[i].ID().toString();
+				wchar_t cid_wide[VST_MAX_PLUGIN_CID_CHARS] = {};
+				utf8_to_wide(cid_str, cid_wide, VST_MAX_PLUGIN_CID_CHARS);
+				if (_wcsicmp(cid_wide, plugin_cid) != 0)
+					continue;
 			}
+
+			runtime.class_info = class_infos[i];
+			trace_editor("load selected class name=%s cid=%s", runtime.class_info.name().c_str(), runtime.class_info.ID().toString().c_str());
+			break;
 		}
 
 		if (i == class_infos.size())
@@ -1864,7 +1875,7 @@ namespace
 		case VstPluginRuntime::HostCommandInitialize:
 			{
 				ScopedRuntimeApiLock api_lock(&runtime);
-				if (!load_runtime_instance(runtime, runtime.command_plugin_path, runtime.command_plugin_name, runtime.command_plugin_name_count))
+				if (!load_runtime_instance(runtime, runtime.command_plugin_path, runtime.command_plugin_name, runtime.command_plugin_name_count, nullptr, runtime.command_plugin_cid))
 					return -2;
 				return configure_runtime(runtime, runtime.command_sample_rate, runtime.command_max_block_size, runtime.command_num_channels);
 			}
@@ -2037,7 +2048,8 @@ int VstRuntime_Create(
 	int max_block_size,
 	int num_channels,
 	wchar_t* plugin_name,
-	size_t plugin_name_count)
+	size_t plugin_name_count,
+	const wchar_t* plugin_cid)
 {
 	std::unique_ptr<VstPluginRuntime> new_runtime(new VstPluginRuntime());
 	uintptr_t thread_handle = 0;
@@ -2105,6 +2117,7 @@ int VstRuntime_Create(
 	EnterCriticalSection(&new_runtime->command_lock);
 	new_runtime->command_type = VstPluginRuntime::HostCommandInitialize;
 	new_runtime->command_plugin_path = plugin_path;
+	new_runtime->command_plugin_cid = plugin_cid;
 	new_runtime->command_plugin_name = plugin_name;
 	new_runtime->command_plugin_name_count = plugin_name_count;
 	new_runtime->command_sample_rate = sample_rate;
@@ -2423,6 +2436,10 @@ int VstRuntime_ProbePluginMetadataOnly(const wchar_t* plugin_path, VstPluginProb
 		utf8_to_wide(class_info.vendor(), info->vendor, VST_MAX_PLUGIN_VENDOR_CHARS);
 		utf8_to_wide(class_info.version(), info->version, VST_MAX_PLUGIN_VERSION_CHARS);
 		utf8_to_wide(subcategories, info->subcategories, VST_MAX_PLUGIN_SUBCATEGORY_CHARS);
+		{
+			std::string cid_str = class_info.ID().toString();
+			utf8_to_wide(cid_str, info->cid, VST_MAX_PLUGIN_CID_CHARS);
+		}
 		return 0;
 	}
 
@@ -2437,6 +2454,197 @@ int VstRuntime_ProbePluginMetadataOnly(const wchar_t* plugin_path, VstPluginProb
 	}
 
 	return info->is_audio_effect ? -5 : -6;
+}
+
+int VstRuntime_ProbePluginAllClasses(const wchar_t* plugin_path, VstPluginProbeInfo* infos, int max_count, int* actual_count)
+{
+	std::string module_path;
+	VST3::Hosting::PluginFactory::ClassInfos class_infos;
+	HMODULE hModule = NULL;
+	int found = 0;
+
+	if (actual_count)
+		*actual_count = 0;
+	if (!plugin_path || !plugin_path[0] || !infos || max_count <= 0)
+		return -1;
+	if (GetFileAttributesW(plugin_path) == INVALID_FILE_ATTRIBUTES)
+		return -2;
+
+	module_path = wide_to_utf8(plugin_path);
+	if (module_path.empty())
+		return -3;
+
+	/* Resolve the actual DLL path.  For VST3 bundles this walks into
+	   Contents/x86_64-win/<name>.vst3. */
+	wchar_t dll_path[MAX_PATH * 2];
+	if (!resolve_plugin_dll_path(plugin_path, dll_path, _countof(dll_path)))
+	{
+		fprintf(stderr, "  [native] Could not resolve DLL path for: %s\n", module_path.c_str());
+		fflush(stderr);
+		return -4;
+	}
+
+	std::string dll_path_utf8 = wide_to_utf8(dll_path);
+	fprintf(stderr, "  [native] Loading DLL: %s\n", dll_path_utf8.c_str());
+	fflush(stderr);
+
+	/* Load with LOAD_WITH_ALTERED_SEARCH_PATH so dependent vendor DLLs
+	   adjacent to the plugin are resolved from the plugin directory. */
+	hModule = LoadLibraryExW(dll_path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+	if (!hModule)
+	{
+		fprintf(stderr, "  [native] LoadLibrary failed (error %lu): %s\n",
+			GetLastError(), dll_path_utf8.c_str());
+		fflush(stderr);
+		return -4;
+	}
+
+	fprintf(stderr, "  [native] DLL loaded. Calling InitDll (if present)...\n");
+	fflush(stderr);
+
+	/* InitDll is optional per the VST3 SDK. */
+	typedef bool (PLUGIN_API *InitModuleFunc)();
+	InitModuleFunc dllEntry = reinterpret_cast<InitModuleFunc>(
+		GetProcAddress(hModule, "InitDll"));
+	if (dllEntry)
+	{
+		if (!dllEntry())
+		{
+			fprintf(stderr, "  [native] InitDll returned false\n");
+			fflush(stderr);
+			FreeLibrary(hModule);
+			return -4;
+		}
+	}
+
+	fprintf(stderr, "  [native] Calling GetPluginFactory (may be slow for shell plugins)...\n");
+	fflush(stderr);
+
+	typedef Steinberg::IPluginFactory* (PLUGIN_API *GetFactoryProc)();
+	GetFactoryProc factoryProc = reinterpret_cast<GetFactoryProc>(
+		GetProcAddress(hModule, "GetPluginFactory"));
+	if (!factoryProc)
+	{
+		fprintf(stderr, "  [native] GetPluginFactory export not found\n");
+		fflush(stderr);
+		FreeLibrary(hModule);
+		return -4;
+	}
+
+	Steinberg::IPluginFactory* rawFactory = factoryProc();
+	if (!rawFactory)
+	{
+		fprintf(stderr, "  [native] GetPluginFactory returned nullptr\n");
+		fflush(stderr);
+		FreeLibrary(hModule);
+		return -4;
+	}
+
+	/* Wrap the raw factory in a reference-counted IPtr.
+	   owned() takes ownership without an extra addRef. */
+	Steinberg::IPtr<Steinberg::IPluginFactory> factoryPtr(Steinberg::owned(rawFactory));
+
+	fprintf(stderr, "  [native] Factory obtained. Enumerating classes...\n");
+	fflush(stderr);
+
+	/* Enumerate classes directly from the raw factory pointer.
+	   We avoid VST3::Hosting::PluginFactory because it copies
+	   the IPtr (addRef), so release() still fires on scope exit
+	   even after take().  Shell plugins like WAVESHell crash when
+	   release() is called on the factory. */
+
+	auto count = rawFactory->countClasses ();
+	if (count < 0) count = 0;
+	class_infos.reserve (count);
+
+	auto f3 = Steinberg::U::cast<Steinberg::IPluginFactory3> (rawFactory);
+	auto f2 = Steinberg::U::cast<Steinberg::IPluginFactory2> (rawFactory);
+	Steinberg::PClassInfo ci;
+	Steinberg::PClassInfo2 ci2;
+	Steinberg::PClassInfoW ci3;
+	for (Steinberg::int32 i = 0; i < count; ++i)
+	{
+		if (f3 && f3->getClassInfoUnicode (i, &ci3) == Steinberg::kResultTrue)
+			class_infos.emplace_back (ci3);
+		else if (f2 && f2->getClassInfo2 (i, &ci2) == Steinberg::kResultTrue)
+			class_infos.emplace_back (ci2);
+		else if (rawFactory->getClassInfo (i, &ci) == Steinberg::kResultTrue)
+			class_infos.emplace_back (ci);
+	}
+
+	fprintf(stderr, "  [native] Found %d total classes. Filtering audio effects...\n",
+		(int)class_infos.size());
+	fflush(stderr);
+
+	for (size_t i = 0; i < class_infos.size() && found < max_count; ++i)
+	{
+		const VST3::Hosting::ClassInfo& class_info = class_infos[i];
+		std::string subcategories;
+		bool has_fx_subcategory;
+		bool instrument_only;
+
+		if (class_info.category() != kVstAudioEffectClass)
+			continue;
+
+		subcategories = class_info.subCategoriesString();
+		has_fx_subcategory = subcategories.find("Fx") != std::string::npos;
+		instrument_only = subcategories.find("Instrument") != std::string::npos && !has_fx_subcategory;
+		if (instrument_only)
+			continue;
+
+		clear_probe_info(&infos[found]);
+		wcsncpy_s(infos[found].path, VST_MAX_PLUGIN_PATH_CHARS, plugin_path, _TRUNCATE);
+		infos[found].is_audio_effect = 1;
+		infos[found].is_valid = 1;
+		infos[found].has_audio_input = 1;
+		infos[found].has_audio_output = 1;
+		utf8_to_wide(class_info.name(), infos[found].name, VST_MAX_PLUGIN_NAME_CHARS);
+		utf8_to_wide(class_info.vendor(), infos[found].vendor, VST_MAX_PLUGIN_VENDOR_CHARS);
+		utf8_to_wide(class_info.version(), infos[found].version, VST_MAX_PLUGIN_VERSION_CHARS);
+		utf8_to_wide(subcategories, infos[found].subcategories, VST_MAX_PLUGIN_SUBCATEGORY_CHARS);
+		{
+			std::string cid_str = class_info.ID().toString();
+			utf8_to_wide(cid_str, infos[found].cid, VST_MAX_PLUGIN_CID_CHARS);
+		}
+
+		fprintf(stderr, "  [native] Audio effect %d/%d: %ls (%ls)\n",
+			found + 1, (int)class_infos.size(), infos[found].name, infos[found].vendor);
+		fflush(stderr);
+
+		++found;
+	}
+
+	fprintf(stderr, "  [native] Done. %d audio effect classes found out of %d total.\n",
+		found, (int)class_infos.size());
+	fflush(stderr);
+
+	if (actual_count)
+		*actual_count = found;
+
+	/* Do NOT release the factory, call ExitDll, or call FreeLibrary.
+	   Shell plugins like WAVESHell crash or hang when their
+	   IPluginFactory is released or their DLL is unloaded
+	   (background threads, DLL_PROCESS_DETACH hangs).
+	   take() detaches the raw pointer without calling release(),
+	   so the IPtr destructor is a no-op.  The scanner process
+	   exits immediately after this function returns — the OS
+	   reclaims all resources. */
+	factoryPtr.take();
+
+	if (found == 0 && class_infos.size() > 0)
+	{
+		clear_probe_info(&infos[0]);
+		wcsncpy_s(infos[0].path, VST_MAX_PLUGIN_PATH_CHARS, plugin_path, _TRUNCATE);
+		utf8_to_wide(class_infos[0].name(), infos[0].name, VST_MAX_PLUGIN_NAME_CHARS);
+		utf8_to_wide(class_infos[0].vendor(), infos[0].vendor, VST_MAX_PLUGIN_VENDOR_CHARS);
+		utf8_to_wide(class_infos[0].version(), infos[0].version, VST_MAX_PLUGIN_VERSION_CHARS);
+		utf8_to_wide(class_infos[0].subCategoriesString(), infos[0].subcategories, VST_MAX_PLUGIN_SUBCATEGORY_CHARS);
+		if (actual_count)
+			*actual_count = 1;
+		return -6;
+	}
+
+	return found > 0 ? 0 : -6;
 }
 
 int VstRuntime_OpenEditor(VstPluginRuntime* runtime, VstProcessingState* owner_state, int plugin_index, HWND parent_window, int& width, int& height, int& can_resize, VstEditorSession*& session)

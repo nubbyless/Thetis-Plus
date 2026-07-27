@@ -55,6 +55,7 @@ namespace Thetis
         private bool _sortAscending = true;
 
         public string SelectedPluginPath { get; private set; }
+        public string SelectedPluginClassId { get; private set; }
 
         public VstPluginPickerForm()
         {
@@ -545,6 +546,7 @@ namespace Thetis
 
             AppendStatus("Adding plugin: " + VstHost.GetCatalogPluginDisplayName(plugin));
             SelectedPluginPath = plugin.Path;
+            SelectedPluginClassId = plugin.ClassId;
             DialogResult = DialogResult.OK;
             Close();
         }

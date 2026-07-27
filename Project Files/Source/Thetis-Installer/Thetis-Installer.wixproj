@@ -6,7 +6,7 @@
     <ProductVersion>3.5</ProductVersion>
     <ProjectGuid>{B3FB4FDC-D517-4C56-872D-9E86627B5A53}</ProjectGuid>
     <SchemaVersion>2.0</SchemaVersion>
-    <OutputName>Thetis_v2.8.x</OutputName>
+    <OutputName>Thetis</OutputName>
     <OutputType>Package</OutputType>
     <WixTargetsPath Condition=" '$(WixTargetsPath)' == '' AND '$(MSBuildExtensionsPath32)' != '' ">$(MSBuildExtensionsPath32)\Microsoft\WiX\v3.x\Wix.targets</WixTargetsPath>
     <WixTargetsPath Condition=" '$(WixTargetsPath)' == '' ">$(MSBuildExtensionsPath)\Microsoft\WiX\v3.x\Wix.targets</WixTargetsPath>
@@ -99,9 +99,9 @@
     </GetAssemblyIdentity>
     <PropertyGroup>
       <In>%(AssemblyInfo.Version)</In>
-      <Pattern>^(\d+.\d+.\d+)</Pattern>
+      <Pattern>^(\d+.\d+.\d+.\d+)</Pattern>
       <AssemblyVersion>$([System.Text.RegularExpressions.Regex]::Match($(In), $(Pattern)))</AssemblyVersion>
     </PropertyGroup>
-    <Move SourceFiles="..\..\bin\Installers\$(OutputName).msi" DestinationFiles="..\..\bin\Installers\Thetis-v$(AssemblyVersion).$(Platform).msi" />
+    <Move SourceFiles="..\..\bin\Installers\$(OutputName).msi" DestinationFiles="..\..\bin\Installers\Thetis-Plus-v$(AssemblyVersion).$(Platform).msi" />
   </Target>
 </Project>
