@@ -17,7 +17,7 @@ https://github.com/ChasingCoffee/Thetis/tree/vst-support
 
 Changelog
 VST2 Support Removed
-Removed VST2 plugin support entirely to avoid potential licensing and legal issues. The scanner now exclusively supports VST3 plugins.
+Removed VST2 plugin support entirely to avoid potential licensing and legal issues. It now exclusively supports VST3 plugins.
 
 Scanner Improvements
 - Added detailed progress output during plugin scanning, including per-plugin timing and probe status (resolved via moduleinfo.json vs probing out-of-process)
