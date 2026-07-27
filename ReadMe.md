@@ -3,6 +3,7 @@ simply add the -vst flag to you shortcut to activate the plugin system
 it is only for 64bit systems there is no x86 32 bit version.
 
 example:
+
 <img width="536" height="696" alt="Screenshot 2026-07-26 205107" src="https://github.com/user-attachments/assets/c9a2abb9-74e0-482e-b2a7-f755bb30d239" />
 
 
