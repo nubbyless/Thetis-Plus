@@ -1,3 +1,6 @@
+WARNING: INSTALLING THIS WILL OVERWRITE YOUR CURRENT VERSION OF THETIS BUT SHOULD KEEP YOUR DATABASE INTACT (AS WITH EVERYTHING FREE NO GUARANTEES)
+
+
 This version of thetis has a built in vst plugin system it can only use vst3 plugins it can not use .vst or .vst2 plugins
 simply add the -vst flag to you shortcut to activate the plugin system
 it is only for 64bit systems there is no x86 32 bit version.
